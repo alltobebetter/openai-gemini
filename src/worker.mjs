@@ -153,126 +153,34 @@ async function handleCompletions (req, apiKey) {
   const TASK = req.stream ? "streamGenerateContent" : "generateContent";
   let url = `${BASE_URL}/${API_VERSION}/models/${model}:${TASK}`;
   if (req.stream) { url += "?alt=sse"; }
-  
-  if (req.stream) {
-    const id = generateChatcmplId();
-    const initialResponse = new TransformStream();
-    const writer = initialResponse.writable.getWriter();
-    const initialChunk = {
-      id,
-      object: "chat.completion.chunk",
-      created: Math.floor(Date.now()/1000),
-      model,
-      choices: [
-        {
-          index: 0,
-          delta: { role: "assistant", content: "" },
-          finish_reason: null
-        }
-      ]
-    };
-    
-    writer.write(new TextEncoder().encode("data: " + JSON.stringify(initialChunk) + delimiter));
-    
-    (async () => {
-      try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: makeHeaders(apiKey, { "Content-Type": "application/json" }),
-          body: JSON.stringify(await transformRequest(req)),
-        });
-        
-        if (response.ok) {
-          const responseStream = response.body
-            .pipeThrough(new TextDecoderStream())
-            .pipeThrough(new TransformStream({
-              transform: parseStream,
-              flush: parseStreamFlush,
-              buffer: "",
-            }))
-            .pipeThrough(new TransformStream({
-              transform: toOpenAiStream,
-              flush: toOpenAiStreamFlush,
-              streamIncludeUsage: req.stream_options?.include_usage,
-              model, id, last: [],
-            }));
-          
-          const reader = responseStream.readable.getReader();
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              writer.write(new TextEncoder().encode("data: [DONE]" + delimiter));
-              writer.close();
-              break;
-            }
-            writer.write(new TextEncoder().encode(value));
-          }
-        } else {
-          writer.write(new TextEncoder().encode("data: " + JSON.stringify({
-            id,
-            object: "chat.completion.chunk",
-            created: Math.floor(Date.now()/1000),
-            model,
-            choices: [
-              {
-                index: 0,
-                delta: {},
-                finish_reason: "error"
-              }
-            ],
-            error: {
-              message: "API调用失败",
-              type: "server_error",
-              code: response.status
-            }
-          }) + delimiter));
-          writer.write(new TextEncoder().encode("data: [DONE]" + delimiter));
-          writer.close();
-        }
-      } catch (error) {
-        writer.write(new TextEncoder().encode("data: " + JSON.stringify({
-          id,
-          object: "chat.completion.chunk",
-          created: Math.floor(Date.now()/1000),
-          model,
-          choices: [
-            {
-              index: 0,
-              delta: {},
-              finish_reason: "error"
-            }
-          ],
-          error: {
-            message: error.message,
-            type: "server_error"
-          }
-        }) + delimiter));
-        writer.write(new TextEncoder().encode("data: [DONE]" + delimiter));
-        writer.close();
-      }
-    })();
-    
-    return new Response(initialResponse.readable, fixCors({
-      status: 200,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive"
-      }
-    }));
-  }
-  
   const response = await fetch(url, {
     method: "POST",
     headers: makeHeaders(apiKey, { "Content-Type": "application/json" }),
-    body: JSON.stringify(await transformRequest(req)),
+    body: JSON.stringify(await transformRequest(req)), // try
   });
 
   let body = response.body;
   if (response.ok) {
-    let id = generateChatcmplId();
-    body = await response.text();
-    body = processCompletionsResponse(JSON.parse(body), model, id);
+    let id = generateChatcmplId(); //"chatcmpl-8pMMaqXMK68B3nyDBrapTDrhkHBQK";
+    if (req.stream) {
+      body = response.body
+        .pipeThrough(new TextDecoderStream())
+        .pipeThrough(new TransformStream({
+          transform: parseStream,
+          flush: parseStreamFlush,
+          buffer: "",
+        }))
+        .pipeThrough(new TransformStream({
+          transform: toOpenAiStream,
+          flush: toOpenAiStreamFlush,
+          streamIncludeUsage: req.stream_options?.include_usage,
+          model, id, last: [],
+        }))
+        .pipeThrough(new TextEncoderStream());
+    } else {
+      body = await response.text();
+      body = processCompletionsResponse(JSON.parse(body), model, id);
+    }
   }
   return new Response(body, fixCors(response));
 }
